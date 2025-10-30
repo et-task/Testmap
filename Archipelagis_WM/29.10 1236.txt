@@ -1,0 +1,288 @@
+29.10 1236
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Archipelagis WM int</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin=""/>
+    
+    <!-- Side-by-side CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-side-by-side@2.2.0/range.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-side-by-side@2.2.0/layout.css" />
+
+    <style>
+        #map { position: absolute; top: 0; bottom: 0; left: 0; right: 0; }
+        /* Range input styling for the side-by-side control */
+        .leaflet-sbs-range {
+            cursor: ew-resize;
+            background: rgba(255, 255, 255, 0.5);
+        }
+        .leaflet-sbs-divider {
+            background-color: black;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+        }
+        /* small OSM link button in the top-right of the map */
+        .osm-link {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            background: #fff;
+            padding: 6px 8px;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #0078A8;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 13px;
+        }
+    </style>
+
+</head>
+<body>
+    <div id="map"> </div>
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+    
+    <!-- Proj4 and Proj4Leaflet for custom CRS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
+    <script src="https://unpkg.com/proj4leaflet@1.0.2/src/proj4leaflet.js"></script>
+    
+    <!-- Leaflet Side by Side Control -->
+    <script src="https://unpkg.com/leaflet-side-by-side@2.0.0/dist/leaflet-side-by-side.min.js"></script>
+    <!-- Shapefile JS (optional - useful if you want to load .shp/.zip client-side) -->
+    <script src="https://unpkg.com/shpjs@latest/dist/shp.min.js"></script>
+
+    <script>
+      // Initialize the map with standard WGS84 projection
+      var map = L.map('map').setView([60.4484, 22.2672], 8);
+      
+      console.log('Map initialized');
+      
+      console.log('Map initialized with center:', map.getCenter());
+
+      // Define base layers
+      var osmLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+          maxZoom: 19
+      }).addTo(map);
+
+      var satelliteLayer = L.tileLayer('https://api.maptiler.com/maps/satellite/{z}/{x}/{y}.jpg?key=F651PQ3V3To4VcaQBjAv', {
+          attribution: '<a href="https://www.maptiler.com/copyright/" target="_blank">&copy; MapTiler</a>',
+          maxZoom: 19
+      });
+
+      // Base maps for layer control
+      var baseMaps = {
+          "OpenStreetMap": osmLayer,
+          "Satellite": satelliteLayer
+      };
+
+      // Overlay maps object
+      var overlayMaps = {};
+
+      // Add both layers for side-by-side comparison
+      osmLayer.addTo(map);
+      satelliteLayer.addTo(map);
+
+      // Ensure proj4 knows EPSG:3067 (ETRS89 / TM35FIN)
+      try {
+          proj4.defs("EPSG:3067", "+proj=utm +zone=35 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs");
+      } catch (e) { console.warn('proj4.defs may already be defined:', e); }
+
+      // Helper: find first numeric coordinate in a GeoJSON object
+      function findFirstCoordinate(obj) {
+          if (!obj) return null;
+          if (obj.type === 'FeatureCollection') {
+              for (var i = 0; i < obj.features.length; i++) {
+                  var c = findFirstCoordinate(obj.features[i]);
+                  if (c) return c;
+              }
+          } else if (obj.type === 'Feature') {
+              return findFirstCoordinate(obj.geometry);
+          } else if (obj.type === 'GeometryCollection') {
+              for (var j = 0; j < obj.geometries.length; j++) {
+                  var d = findFirstCoordinate(obj.geometries[j]);
+                  if (d) return d;
+              }
+          } else if (obj.coordinates) {
+              // Descend until we get to a pair of numbers
+              var coords = obj.coordinates;
+              while (Array.isArray(coords) && Array.isArray(coords[0])) coords = coords[0];
+              if (Array.isArray(coords) && typeof coords[0] === 'number') return coords;
+          }
+          return null;
+      }
+
+      // Reproject coordinates recursively from `fromSrs` to `toSrs` (proj4 syntax)
+      function reprojectCoordinates(coords, fromSrs, toSrs) {
+          if (typeof coords[0] === 'number') {
+              // coords = [x, y] in source CRS
+              var p = proj4(fromSrs, toSrs, coords);
+              // proj4 returns [lon, lat] for geographic target; GeoJSON expects [lon, lat]
+              return [p[0], p[1]];
+          }
+          return coords.map(function(c) { return reprojectCoordinates(c, fromSrs, toSrs); });
+      }
+
+      function reprojectGeoJSON(geojson, fromSrs, toSrs) {
+          var copy = JSON.parse(JSON.stringify(geojson));
+          function walk(obj) {
+              if (!obj) return;
+              if (obj.type === 'FeatureCollection') return obj.features.forEach(walk);
+              if (obj.type === 'Feature') return walk(obj.geometry);
+              if (obj.type === 'GeometryCollection') return obj.geometries.forEach(walk);
+              if (obj.coordinates) {
+                  obj.coordinates = reprojectCoordinates(obj.coordinates, fromSrs, toSrs);
+              }
+          }
+          walk(copy);
+          return copy;
+      }
+
+      // Function to load a GeoJSON file and handle reprojection
+      function loadGeoJSON(url, options) {
+          return fetch(url)
+              .then(function(response) { 
+                  if (!response.ok) throw new Error('HTTP error, status = ' + response.status);
+                  return response.json(); 
+              })
+              .then(function(data) {
+                  console.log("GeoJSON loaded from " + url + ":", data);
+
+                  var first = findFirstCoordinate(data);
+                  var geojsonToUse = data;
+
+                  // Check if we need to reproject
+                  if (first && (Math.abs(first[0]) > 10000 || Math.abs(first[1]) > 10000)) {
+                      console.log('Reprojecting ' + url + ' from EPSG:3067 to WGS84...');
+                      geojsonToUse = reprojectGeoJSON(data, 'EPSG:3067', 'WGS84');
+                      console.log('Reprojected coordinates:', findFirstCoordinate(geojsonToUse));
+                  }
+
+                  return L.geoJSON(geojsonToUse, options); //.addTo(map);//
+              });
+      }
+
+      // Load both GeoJSON files
+      Promise.all([
+          loadGeoJSON('SW_geo.geojson', {
+              style: {
+                  color: "#0033cc",
+                  weight: 2,
+                  opacity: 0.9,
+                  fillOpacity: 0.2
+              }
+          }).then(function(layer) {
+              overlayMaps["SW Finland"] = layer;
+              return layer; // Return layer for side-by-side
+          }),
+          
+          loadGeoJSON('paavo_2024/paavo_SW_2024.geojson', {
+              style: {
+                  color: "#00cc92",
+                  weight: 2,
+                  opacity: 0.9,
+                  fillOpacity: 0.2
+              }
+          }).then(function(layer) {
+              overlayMaps["Paavo SW 2024"] = layer;
+              return layer; // Return layer for side-by-side
+          }),
+
+          loadGeoJSON('paavo_2045/paavo_SW_2045.geojson', {
+              style: {
+                  color: "#cc4400",
+                  weight: 2,
+                  opacity: 0.9,
+                  fillOpacity: 0.2
+              }
+          }).then(function(layer) {
+              overlayMaps["Paavo SW 2045"] = layer;
+              return layer; // Return layer for side-by-side
+          })
+
+
+      ]).then(function(layers) {
+          // Add single layer control after all layers are loaded
+          L.control.layers(baseMaps, overlayMaps).addTo(map);
+          // DEBUG: Check if layers are actually on the map
+    console.log('Layers loaded:', layers);
+    layers.forEach(function(layer, index) {
+        console.log('Layer ' + index + ' on map:', map.hasLayer(layer));
+    });
+           // CREATE SIDE-BY-SIDE FOR GEOJSON LAYERS ONLY
+        if (typeof L.control.sideBySide === 'function') {
+            // Compare SW Finland and Paavo 2024 (left) vs Paavo 2045 (right)
+            var sideBySideControl = L.control.sideBySide(
+                [layers[0], layers[1]],  // left layers
+                [layers[2]],             // right layers
+                {
+                    thumbSize: 45,
+                    padding: 10
+                }
+            ).addTo(map);
+            
+            console.log('Side-by-side control added for GeoJSON layers');
+            
+            // Optional: Listen for divider movement
+            sideBySideControl.on('dividermove', function(e) {
+                console.log('Divider position:', e.x);
+            });
+            
+        } else {
+            console.error('SideBySide control not available');
+        }
+          
+      }).catch(function(error) {
+          console.error("Error loading GeoJSON layers:", error);
+      });
+     
+
+      // Add attribution
+      map.attributionControl.addAttribution('&copy; <a href="http://teamwebsite.com">Archipelagis</a>');
+      
+           /* / varmaan väärä kohta lisätä, kommentoidaan pois se hetkeksi / Create side-by-side control only after both layers have loaded (or errored)
+            function waitForTileLayer(layer, timeoutMs) {
+                    timeoutMs = timeoutMs || 3000;
+                    return new Promise(function(resolve) {
+                            var done = false;
+                            function finish() { if (!done) { done = true; resolve(); } }
+                            // If the layer has already been added to the map and has tiles, try to resolve quickly
+                            layer.on('load', function() { console.log('Layer loaded:', layer); finish(); });
+                            layer.on('tileerror', function() { console.warn('Tile error on layer:', layer); finish(); });
+                            // Fallback timeout so we don't wait forever
+                            setTimeout(function() { console.warn('Layer load timeout, proceeding:', layer); finish(); }, timeoutMs);
+                    });
+            }
+
+            Promise.all([waitForTileLayer(osmLayer, 4000), waitForTileLayer(satelliteLayer, 4000)])
+                .then(function() {
+                    if (typeof L.control.sideBySide !== 'function') {
+                            console.error('sideBySide plugin not available. Check that leaflet-side-by-side script was loaded after Leaflet.');
+                            return;
+                    }
+                    console.log('Creating side-by-side control');
+                    var sideBySide = L.control.sideBySide(osmLayer, satelliteLayer).addTo(map);
+                }); */
+
+      /*// Add an OSM link button
+      var osmUrl = 'https://www.openstreetmap.org/search?lat=' + map.getCenter().lat + 
+                  '&lon=' + map.getCenter().lng + 
+                  '&zoom=' + map.getZoom();
+      var link = L.DomUtil.create('a', 'osm-link', map.getContainer());
+      link.href = osmUrl;
+      link.target = '_blank';
+      link.innerText = 'Open in OSM';
+      L.DomEvent.disableClickPropagation(link);*/ 
+    </script>
+</body>
+</html>
