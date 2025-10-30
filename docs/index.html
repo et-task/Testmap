@@ -257,7 +257,7 @@
       function loadMedicalServices() {
           console.log('Attempting to load medical services data...');
           
-          const url = './MedicalServices_sw_finland.geojson';
+          const url = 'MedicalServices_sw_finland.geojson';
           
           return fetch(url)
               .then(response => {
@@ -423,7 +423,7 @@
           overlayMaps["SW Finland"] = layer;
           //layer.addTo(map);
           console.log('SW Finland layer added to map');
-          return loadGeoJSON('./paavo_2024/paavo_SW_2024.geojson', {
+          return loadGeoJSON('paavo_2024/paavo_SW_2024.geojson', {
               style: {
                   color: "#00cc92",
                   weight: 2,
@@ -435,7 +435,7 @@
       }).then(function(layer) {
           paavo2024Layer = layer;
           console.log('Paavo 2024 layer loaded');
-          return loadGeoJSON('./paavo_2045/paavo_sw_2045.geojson', {
+          return loadGeoJSON('paavo_2045/paavo_sw_2045.geojson', {
               style: {
                   color: "#cc4400",
                   weight: 2,
@@ -498,4 +498,5 @@
     </script>
     
 </body>
+
 </html>
